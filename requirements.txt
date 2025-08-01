@@ -64,7 +64,7 @@ streamlit==1.33.0
 tenacity==9.0.0
 threadpoolctl==3.5.0
 toml==0.10.2
-tornado==6.5.1
+tornado==6.4.2
 traitlets==5.14.3
 typing_extensions==4.14.0
 tzdata==2025.2
