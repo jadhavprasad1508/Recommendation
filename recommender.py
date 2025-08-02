@@ -3,9 +3,10 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
 import json
+import streamlit as st
 
 # ====== Configuration ======
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
 DATA_PATH = "recommendation_dataset_60k_with_names.xlsx"
 
 # ====== Load & Preprocess Data ======
