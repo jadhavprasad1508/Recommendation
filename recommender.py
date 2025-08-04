@@ -3,9 +3,10 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
 import json
+import os
 
 # ====== Configuration ======
-OPENROUTER_API_KEY = " "
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 DATA_PATH = "recommendation_dataset_60k_with_names.xlsx"
 
 # ====== Load & Preprocess Data ======
