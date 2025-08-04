@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import time
+import os
+os.environ["STREAMLIT_SERVER_HEADLESS"] = "1"
+
 from recommender import (
     generate_recommendations,
     generate_hybrid_recommendations
@@ -40,6 +43,8 @@ def load_data():
     return df
 
 df = load_data()
+print("✅ Data loaded. Rows:", df.shape[0])
+
 
 # Map product name → price for fast lookup
 price_map = (
