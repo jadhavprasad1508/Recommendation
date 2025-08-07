@@ -1,41 +1,9 @@
 import streamlit as st
 import pandas as pd
 import time
-import os
-os.environ["STREAMLIT_SERVER_HEADLESS"] = "1"
+from recommender import generate_recommendations, generate_hybrid_recommendations
 
-from recommender import (
-    generate_recommendations,
-    generate_hybrid_recommendations
-)
-
-# ──────────────────────────────────────────────
-# 🔐 Login Gate
-# ──────────────────────────────────────────────
-
-def login():
-    if st.session_state.get("authenticated") != True:
-        username = st.text_input("User ID")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if username == "Admin" and password == "Vengro@2025":
-                st.session_state.authenticated = True
-                st.rerun()  # ✅ Corrected rerun call
-            else:
-                st.error("Invalid credentials.")
-
-# Initialize session state
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if not st.session_state["authenticated"]:
-    login()
-    st.stop()
-
-# ──────────────────────────────────────────────
-# ✅ Logged In - Load Dashboard
-# ──────────────────────────────────────────────
-
+# ──────────────── 1. Load Data & Precompute Maps ────────────────
 @st.cache_data
 def load_data():
     df = pd.read_excel("recommendation_dataset_60k_with_names.xlsx")
@@ -43,8 +11,6 @@ def load_data():
     return df
 
 df = load_data()
-print("✅ Data loaded. Rows:", df.shape[0])
-
 
 # Map product name → price for fast lookup
 price_map = (
@@ -57,7 +23,7 @@ price_map = (
 customer_ids = df['customer_id'].unique()
 min_price, max_price = min(price_map.values()), max(price_map.values())
 
-# ─────────────── 2. Page Setup ───────────────
+# ──────────────── 2. Page Setup ────────────────
 st.set_page_config(page_title="THE BEST AI Recommender", layout="wide")
 st.title("🚀 THE BEST AI‑Powered Product Recommendation Engine")
 st.markdown(
@@ -65,7 +31,7 @@ st.markdown(
     "and mock cart buttons—all powered by advanced AI."
 )
 
-# ─────────────── 3. Sidebar Controls ───────────────
+# ──────────────── 3. Sidebar Controls & Metrics Placeholders ────────────────
 with st.sidebar:
     st.header("Filters & Settings")
 
@@ -83,7 +49,6 @@ with st.sidebar:
         "Recommendation Mode",
         ["Item Type", "Customer Type", "Hybrid"]
     )
-
     descriptions = {
         "Item Type": "Suggests products similar to what you've bought.",
         "Customer Type": "Recommends items popular among customers like you.",
@@ -92,33 +57,32 @@ with st.sidebar:
     st.caption(descriptions[mode])
 
     top_n = st.slider("Number of Recommendations", 1, 10, 5)
-
     sort_by = st.selectbox("Sort by", ["Score ⬇️", "Alphabetical ⬆️"])
 
     st.markdown("---")
     st.subheader("Dashboard Metrics")
-
     recs_served = st.empty()
-    avg_score = st.empty()
-    latency_ms = st.empty()
+    avg_score   = st.empty()
+    latency_ms  = st.empty()
 
     generate = st.button("Generate Recommendations")
 
-# ─────────────── 4. Main Area ───────────────
+# ──────────────── 4. Main Display ────────────────
 if generate:
     start_time = time.time()
 
+    # 4a) Fetch recommendations
     if mode == "Hybrid":
         result = generate_hybrid_recommendations(customer_id, top_n)
-        history = result["purchase_history"]
-        recs = result["recommendations"]
+        history   = result["purchase_history"]
+        recs      = result["recommendations"]
         explanation = result["explanation"]
     else:
         history, recs, explanation = generate_recommendations(
             customer_id, method=mode, top_n=top_n
         )
 
-    # Apply price filter
+    # 4b) Apply price filter via price_map
     filtered = []
     for name, score in recs:
         price = price_map.get(name, None)
@@ -126,13 +90,13 @@ if generate:
             filtered.append((name, score))
     recs = filtered
 
-    # Sort
+    # 4c) Sort
     if sort_by == "Score ⬇️":
         recs.sort(key=lambda x: x[1] or 0, reverse=True)
     else:
         recs.sort(key=lambda x: x[0])
 
-    # Update Metrics
+    # 4d) Update Metrics
     recs_served.metric("Recs Served", len(recs))
     numeric_scores = [s for _,s in recs if s is not None]
     avg = (sum(numeric_scores)/len(numeric_scores)) if numeric_scores else 0
@@ -140,7 +104,7 @@ if generate:
     latency = int((time.time() - start_time)*1000)
     latency_ms.metric("API Latency (ms)", latency)
 
-    # Columns: Purchases | Recommendations
+    # 4e) Layout: Purchases on Left, Recs on Right
     col1, col2 = st.columns([1,1], gap="large")
 
     with col1:
@@ -155,16 +119,18 @@ if generate:
             c1, c2, c3 = st.columns([4,2,2], gap="small")
             price = price_map.get(prod, 0)
             c1.markdown(f"**{prod}** — ₹{price:.2f}")
+
             if score is not None:
                 pct = max(0, min(int(score*100), 100))
                 c2.progress(pct)
                 c2.caption(f"{pct}%")
             else:
                 c2.write("—")
+
             if c3.button("Add to Cart", key=f"{mode}_{i}_{prod}"):
                 st.toast(f"✔️ Added {prod} to cart!")
 
-    # Explanation
+    # 4f) Explanation
     st.markdown("---")
     st.subheader("💡 Why These Recommendations?")
     st.info(explanation)
