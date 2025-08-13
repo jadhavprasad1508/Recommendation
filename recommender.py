@@ -4,12 +4,17 @@ from sklearn.metrics.pairwise import cosine_similarity
 import requests
 import json
 import os
-
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    raise RuntimeError("OPENROUTER_API_KEY not set in environment variables.")
+import streamlit as st
 
 # ====== Configuration ======
+OPENROUTER_API_KEY = (
+    os.getenv("OPENROUTER_API_KEY")
+    or st.secrets.get("OPENROUTER_API_KEY")
+)
+
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("Missing OPENROUTER_API_KEY")
+
 
 DATA_PATH = "recommendation_dataset_60k_with_names.xlsx"
 
