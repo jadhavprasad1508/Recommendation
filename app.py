@@ -1,165 +1,180 @@
+"""
+app.py - Streamlit frontend.
+
+Features:
+- Login (Admin/Vengro@2025)
+- Dataset selector: use current bundled dataset OR upload new dataset
+- Validation + insights for uploaded dataset
+- Generate recommendations using the Recommender class
+- Explanations via OpenRouter if API key is available via environment or .streamlit/secrets.toml
+"""
+
 import streamlit as st
 import pandas as pd
+import os
 import time
-from recommender import (
-    generate_recommendations,
-    generate_hybrid_recommendations
-)
 
-# ──────────────────────────────────────────────
-# 🔐 Login Gate
-# ──────────────────────────────────────────────
+from recommender import Recommender, validate_dataframe
 
-def login():
-    if st.session_state.get("authenticated") != True:
-        username = st.text_input("User ID")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if username == "Admin" and password == "Vengro@2025":
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Invalid credentials.")
+# ---------------------------
+# Page config
+# ---------------------------
+st.set_page_config(page_title="THE BEST AI Recommender", layout="wide")
+
+# ---------------------------
+# Login
+# ---------------------------
+def login_ui():
+    st.header("Login")
+    username = st.text_input("User ID")
+    password = st.text_input("Password", type="password")
+    dataset_choice = st.selectbox("Dataset Source", ["Use Current Dataset", "Upload New Dataset"])
+    upload_file = None
+    if dataset_choice == "Upload New Dataset":
+        upload_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+        st.write("Minimum recommended columns: `customer_id`, `product_id` or `product_name`, `qty`, `list_price`, `txn_timestamp`.")
+    if st.button("Login"):
+        if username == "Admin" and password == "Vengro@2025":
+            st.session_state["authenticated"] = True
+            st.session_state["dataset_choice"] = dataset_choice
+            if upload_file is not None:
+                st.session_state["uploaded_file_bytes"] = upload_file.getvalue()
+                st.session_state["uploaded_file_name"] = upload_file.name
+            st.experimental_rerun()
+        else:
+            st.error("Invalid credentials.")
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
 if not st.session_state["authenticated"]:
-    login()
+    login_ui()
     st.stop()
 
-# ──────────────────────────────────────────────
-# ✅ Logged In - Load Dashboard
-# ──────────────────────────────────────────────
-
+# ---------------------------
+# Load dataset (current or uploaded)
+# ---------------------------
 @st.cache_data
-def load_data():
-    df = pd.read_excel("recommendation_dataset_60k_with_names.xlsx")
-    df['list_price'] = pd.to_numeric(df['list_price'], errors='coerce')
+def load_bundled_dataset(path="recommendation_dataset_60k_with_names.xlsx"):
+    df = pd.read_excel(path)
     return df
 
-df = load_data()
+dataset_choice = st.session_state.get("dataset_choice", "Use Current Dataset")
+df = None
+uploaded = False
 
-# Map product name → price
-price_map = (
-    df[['product_name','list_price']]
-    .drop_duplicates()
-    .set_index('product_name')['list_price']
-    .to_dict()
-)
+if dataset_choice == "Use Current Dataset":
+    df = load_bundled_dataset()
+else:
+    # uploaded dataset handling
+    uploaded_bytes = st.session_state.get("uploaded_file_bytes")
+    uploaded_name = st.session_state.get("uploaded_file_name", None)
+    if uploaded_bytes is None:
+        st.warning("You selected 'Upload New Dataset' but didn't upload a file. Please upload a CSV or Excel file and re-click Login.")
+        st.stop()
+    # load it into pandas
+    try:
+        if uploaded_name.endswith(".csv"):
+            df = pd.read_csv(pd.io.common.BytesIO(uploaded_bytes))
+        else:
+            df = pd.read_excel(pd.io.common.BytesIO(uploaded_bytes))
+        uploaded = True
+    except Exception as e:
+        st.error(f"Failed to read uploaded file: {e}")
+        st.stop()
 
-customer_ids = df['customer_id'].unique()
-min_price, max_price = min(price_map.values()), max(price_map.values())
+# Validate dataset
+ok, msg = validate_dataframe(df)
+if not ok:
+    st.error(msg)
+    st.stop()
 
-# ─────────────── Page Setup ───────────────
-st.set_page_config(page_title="THE BEST AI Recommender", layout="wide")
-st.title("🚀 THE BEST AI-Powered Product Recommendation Engine")
-st.markdown(
-    "Filter, sort, and explore recommendations with confidence bars and insights—all powered by advanced AI."
-)
+# ---------------------------
+# Create/instantiate recommender (lazy)
+# ---------------------------
+# try to get API key for explainability
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") or st.secrets.get("OPENROUTER_API_KEY", None) if "secrets" in dir(st) else None
 
-# ─────────────── Sidebar ───────────────
+@st.cache_resource
+def build_recommender(dataframe, api_key):
+    return Recommender(dataframe, openrouter_api_key=api_key)
+
+reco = build_recommender(df, OPENROUTER_API_KEY)
+
+# ---------------------------
+# Sidebar: controls
+# ---------------------------
 with st.sidebar:
-    st.header("Filters & Settings")
-
-    customer_id = st.selectbox("Select Customer ID", customer_ids)
-
-    price_range = st.slider(
-        "Price range (₹)",
-        min_value=float(min_price),
-        max_value=float(max_price),
-        value=(float(min_price), float(max_price)),
-        format="%.2f"
-    )
-
-    mode = st.selectbox(
-        "Recommendation Mode",
-        ["Item Type", "Customer Type", "Hybrid"]
-    )
-
-    descriptions = {
-        "Item Type": "Suggests products similar to what you've bought.",
-        "Customer Type": "Recommends items popular among customers like you.",
-        "Hybrid": "Combines similarity, peer behavior, recency, and price fit."
-    }
-    st.caption(descriptions[mode])
-
+    st.header("Recommendation Settings")
+    customer_list = df["customer_id"].astype(str).unique().tolist()
+    selected_customer = st.selectbox("Customer ID", customer_list)
+    mode = st.selectbox("Recommendation Mode", ["Item Type", "Customer Type", "Hybrid"])
     top_n = st.slider("Number of Recommendations", 1, 10, 5)
-    sort_by = st.selectbox("Sort by", ["Score ⬇️", "Alphabetical ⬆️"])
-
+    run_button = st.button("Generate Recommendations")
     st.markdown("---")
-    st.subheader("Dashboard Metrics")
+    st.subheader("Dataset Insights")
+    if st.button("Show Insights"):
+        insights = reco.get_insights()
+        st.write(insights)
 
-    recs_served = st.empty()
-    avg_score = st.empty()
+# ---------------------------
+# Main area
+# ---------------------------
+st.title("THE BEST — Dynamic Recommender")
 
-    generate = st.button("Generate Recommendations")
+# show whether current vs uploaded
+if uploaded:
+    st.info(f"Using uploaded dataset: {uploaded_name}")
+else:
+    st.info("Using bundled dataset (internal)")
 
-# ─────────────── Main Area ───────────────
-if generate:
+# quick top-level insights
+ins = reco.get_insights()
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Unique Customers", ins["unique_customers"])
+c2.metric("Unique Products", ins["unique_products"])
+c3.metric("Total Purchases", ins["total_rows"])
+c4.metric("Repeated Purchase Ratio", f"{ins['repeated_purchase_ratio']:.2f}")
+
+# show top locations / demos if exist
+if ins["top_locations"]:
+    st.write("Top Locations:", ins["top_locations"])
+if ins["demographics"]:
+    st.write("Top Demographics:", ins["demographics"])
+
+# purchase history (last 3)
+st.subheader("Recent Purchases")
+hist = reco.getPurchaseHistory(selected_customer, n=3)
+for p in hist:
+    st.write(f"- {p['product_name']} (Qty: {p['qty']}) — ₹{p['price']:.2f}")
+
+# generate recommendations
+if run_button:
     start_time = time.time()
+    recs = reco.recommend(selected_customer, method=mode, top_n=top_n)
+    elapsed = time.time() - start_time
 
-    if mode == "Hybrid":
-        result = generate_hybrid_recommendations(customer_id, top_n)
-        history = result["purchase_history"]
-        recs = result["recommendations"]
-        explanation = result["explanation"]
+    st.subheader("Recommendations")
+    if len(recs) == 0:
+        st.warning("No recommendations found for this customer (maybe new or no purchases).")
     else:
-        history, recs, explanation = generate_recommendations(
-            customer_id, method=mode, top_n=top_n
-        )
+        # display recommendations with bars
+        for name, score in recs:
+            pct = int(max(0, min(100, score * 100))) if score is not None else 0
+            cols = st.columns([4, 1])
+            cols[0].write(f"**{name}**")
+            cols[1].progress(pct)
 
-    # Apply price filter
-    filtered = []
-    for name, score in recs:
-        price = price_map.get(name, None)
-        if price is None or (price_range[0] <= price <= price_range[1]):
-            filtered.append((name, score))
-    recs = filtered
-
-    # Sort
-    if sort_by == "Score ⬇️":
-        recs.sort(key=lambda x: x[1] or 0, reverse=True)
-    else:
-        recs.sort(key=lambda x: x[0])
-
-    # Update Metrics
-    recs_served.metric("Recs Served", len(recs))
-    numeric_scores = [s for _, s in recs if s is not None]
-    avg = (sum(numeric_scores)/len(numeric_scores)) if numeric_scores else 0
-    avg_score.metric("Avg Confidence", f"{avg*100:.1f}%")
-
-    # Columns: Purchases | Recommendations
-    col1, col2 = st.columns([1,1], gap="large")
-
-    # 🛍️ Show Purchase History with Quantity
-    with col1:
-        st.subheader("🛍️ Your Last 3 Purchases")
-        recent_purchases = df[df['customer_id'] == customer_id].sort_values('txn_timestamp', ascending=False).head(3)
-        for _, row in recent_purchases.iterrows():
-            prod = row['product_name']
-            qty = row['qty']
-            price = row['list_price']
-            st.markdown(f"- **{prod}** (Qty: {qty}) — ₹{price:.2f}")
-
-    # ✨ Recommendations (without Add to Cart)
-    with col2:
-        st.subheader(f"✨ Top {len(recs)} Recommendations")
-        for i, (prod, score) in enumerate(recs):
-            c1, c2 = st.columns([4,2], gap="small")
-            price = price_map.get(prod, 0)
-            c1.markdown(f"**{prod}** — ₹{price:.2f}")
-            if score is not None:
-                pct = max(0, min(int(score*100), 100))
-                c2.progress(pct)
-                c2.caption(f"{pct}%")
-            else:
-                c2.write("—")
-
-    # 💡 Explanation
+    # explanation
+    rec_names = [n for n, _ in recs]
+    explanation = reco.explain(selected_customer, rec_names, method=mode)
     st.markdown("---")
-    st.subheader("💡 Why These Recommendations?")
+    st.subheader("Why these recommendations?")
     st.info(explanation)
 
+    # additional dataset-level insight after generation
+    st.markdown("---")
+    st.write(f"Generated in {elapsed:.2f}s")
+
 else:
-    st.info("Adjust filters & settings, then click **Generate Recommendations**.")
+    st.info("Choose settings on the sidebar and click Generate Recommendations.")
