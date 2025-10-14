@@ -47,7 +47,9 @@ def login():
         if st.button("Login"):
             if username == "Admin" and password == "Vengro@2025":
                 st.session_state.authenticated = True
-                st.session_state.dataset_choice = dataset_choice
+                # Do NOT overwrite widget-controlled keys like `dataset_choice`.
+                # Preserve the user's selection by storing only the uploaded dataframe
+                # (the selectbox already holds the current choice internally).
                 st.session_state.uploaded_df = uploaded_df
                 st.rerun()
             else:
