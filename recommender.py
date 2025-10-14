@@ -461,3 +461,79 @@ def validate_dataframe(df: pd.DataFrame):
     if missing:
         return False, f"Missing required columns: {missing}. Required minimal: {MIN_REQUIRED_COLUMNS} plus product id column."
     return True, "OK"
+
+
+# --------------------------
+# Compatibility wrappers for app.py
+# --------------------------
+def _ensure_recommender_instance(df=None, openrouter_api_key=None):
+    """Create a Recommender instance from df or raise if df missing."""
+    if df is None:
+        raise ValueError("DataFrame must be provided to build recommendations.")
+    return Recommender(df, openrouter_api_key=openrouter_api_key)
+
+
+def generate_recommendations(customer_id: str, method: str = "Item Type", top_n: int = 5, df: pd.DataFrame = None):
+    """Return (purchase_history_names, recommendations, explanation) for compatibility with app.py.
+
+    - purchase_history_names: list of tuples (product_display_name, qty)
+    - recommendations: list of tuples (product_display_name, score)
+    - explanation: short text
+    """
+    if df is None:
+        # try to load the app's default dataset if available
+        default_path = os.path.join(os.path.dirname(__file__), "recommendation_dataset_60k_with_names.xlsx")
+        if os.path.exists(default_path):
+            df = pd.read_excel(default_path)
+            df['list_price'] = pd.to_numeric(df.get('list_price', pd.Series()), errors='coerce')
+        else:
+            raise ValueError("generate_recommendations requires a DataFrame 'df' argument or the default dataset file must be present")
+
+    rec = _ensure_recommender_instance(df=df)
+    purchase_history = [(p['product_name'], p['qty']) for p in rec.getPurchaseHistory(customer_id, n=5)]
+    recs = rec.recommend(customer_id, method=method, top_n=top_n)
+    # rec.recommend returns list of (display_name, score)
+    recommended_names = [name for name, _ in recs]
+    explanation = rec.explain(customer_id, recommended_names, method=method)
+    return purchase_history, recs, explanation
+
+
+def generate_hybrid_recommendations(customer_id: str, top_n: int = 5, df: pd.DataFrame = None):
+    """Return dict with keys purchase_history, recommendations, explanation for app.py when using default dataset."""
+    if df is None:
+        default_path = os.path.join(os.path.dirname(__file__), "recommendation_dataset_60k_with_names.xlsx")
+        if os.path.exists(default_path):
+            df = pd.read_excel(default_path)
+            df['list_price'] = pd.to_numeric(df.get('list_price', pd.Series()), errors='coerce')
+        else:
+            raise ValueError("generate_hybrid_recommendations requires a DataFrame 'df' argument or the default dataset file must be present")
+    rec = _ensure_recommender_instance(df=df)
+    purchase_history = [(p['product_name'], p['qty']) for p in rec.getPurchaseHistory(customer_id, n=5)]
+    recs = rec.recommend_hybrid(customer_id, top_n=top_n)
+    # map ids to display names
+    recs_named = []
+    for pid, score in recs:
+        name = rec._display_name_map.get(str(pid), str(pid))
+        recs_named.append((name, float(score)))
+    explanation = rec.explain(customer_id, [n for n, _ in recs_named], method="Hybrid")
+    return {"purchase_history": purchase_history, "recommendations": recs_named, "explanation": explanation}
+
+
+def generate_recommendations_from_upload(df_uploaded: pd.DataFrame, customer_id: str, method: str, top_n: int = 5):
+    """Helper used by the app when user uploads a dataset.
+
+    Returns a dict with purchase_history, recommendations, explanation.
+    """
+    valid, msg = validate_dataframe(df_uploaded)
+    if not valid:
+        raise ValueError(f"Uploaded dataframe invalid: {msg}")
+    rec = Recommender(df_uploaded)
+    purchase_history = [(p['product_name'], p['qty']) for p in rec.getPurchaseHistory(customer_id, n=5)]
+    if method == 'Hybrid':
+        recs = rec.recommend_hybrid(customer_id, top_n=top_n)
+    else:
+        recs = rec.recommend(customer_id, method=method, top_n=top_n)
+    # rec.recommend returns display names already
+    recommended_names = [name for name, _ in recs]
+    explanation = rec.explain(customer_id, recommended_names, method=method)
+    return {"purchase_history": purchase_history, "recommendations": recs, "explanation": explanation}
